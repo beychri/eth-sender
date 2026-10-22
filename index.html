@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ETH Sender</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #16181d; --muted: #6b7280;
+    --border: #e2e5ea; --accent: #4f46e5; --accent-text: #ffffff;
+    --ok: #15803d; --err: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b22; --text: #e8eaee; --muted: #9aa1ad;
+      --border: #2a2f39; --accent: #818cf8; --accent-text: #0f1115;
+      --ok: #4ade80; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px;
+  }
+  .card {
+    width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 24px;
+  }
+  h1 { margin: 0 0 4px; font-size: 1.4rem; }
+  .sub { margin: 0 0 20px; color: var(--muted); font-size: .92rem; }
+  .row { display: flex; justify-content: space-between; font-size: .88rem; color: var(--muted); margin-bottom: 6px; }
+  .row span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
+  label { display: block; font-size: .88rem; margin: 18px 0 6px; }
+  input {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-family: ui-monospace, monospace; font-size: .9rem;
+  }
+  button {
+    width: 100%; margin-top: 14px; padding: 13px; border: 0; border-radius: 10px;
+    background: var(--accent); color: var(--accent-text); font-size: 1rem; font-weight: 600; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #status { margin-top: 16px; font-size: .9rem; min-height: 1.2em; word-break: break-word; }
+  .ok { color: var(--ok); } .err { color: var(--err); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>0,05 ETH senden</h1>
+  <p class="sub">Zieladresse eingeben, Button drücken – der Contract schickt 0,05 ETH.</p>
+
+  <div class="row"><span>Wallet</span><span id="account">nicht verbunden</span></div>
+  <div class="row"><span>Contract-Guthaben</span><span id="balance">–</span></div>
+
+  <button id="connectBtn" class="secondary">Wallet verbinden</button>
+
+  <label for="target">Zieladresse</label>
+  <input id="target" placeholder="0x…" autocomplete="off" spellcheck="false">
+
+  <button id="sendBtn" disabled>0,05 ETH senden</button>
+  <div id="status"></div>
+</div>
+
+<script>
+  // ===== HIER ANPASSEN =====
+  const CONTRACT_ADDRESS = "0x7617D6832Bc4C8046bc16B850F4dd2B103c46101";
+  const CHAIN_ID = 11155111;           // 11155111 = Sepolia, 1 = Ethereum Mainnet
+  const EXPLORER = "https://sepolia.etherscan.io"; // für Mainnet: https://etherscan.io
+  // =========================
+
+  const ABI = [
+    "function sendTo(address to)",
+    "function balance() view returns (uint256)",
+    "error NotOwner()", "error IsPaused()", "error ZeroAddress()",
+    "error InsufficientBalance()", "error CooldownActive(uint256 availableAt)",
+    "error TransferFailed()", "error Reentrancy()"
+  ];
+
+  const ERROR_TEXT = {
+    IsPaused: "Der Contract ist pausiert.",
+    ZeroAddress: "Ungültige Zieladresse.",
+    InsufficientBalance: "Der Contract hat nicht genug ETH.",
+    TransferFailed: "Die Überweisung an die Zieladresse ist fehlgeschlagen.",
+    Reentrancy: "Unerlaubter Mehrfachaufruf."
+  };
+
+  const $ = id => document.getElementById(id);
+  let provider, signer, contract;
+
+  function setStatus(html, cls = "") {
+    $("status").className = cls;
+    $("status").innerHTML = html;
+  }
+
+  function short(addr) { return addr.slice(0, 6) + "…" + addr.slice(-4); }
+
+  async function refreshBalance() {
+    try {
+      const wei = await contract.balance();
+      $("balance").textContent = ethers.formatEther(wei) + " ETH";
+    } catch { $("balance").textContent = "–"; }
+  }
+
+  async function connect() {
+    if (!window.ethereum) {
+      setStatus("Keine Wallet gefunden. Bitte MetaMask installieren oder die Seite im Wallet-Browser öffnen.", "err");
+      return;
+    }
+    try {
+      provider = new ethers.BrowserProvider(window.ethereum);
+      await provider.send("eth_requestAccounts", []);
+
+      const net = await provider.getNetwork();
+      if (Number(net.chainId) !== CHAIN_ID) {
+        try {
+          await provider.send("wallet_switchEthereumChain", [{ chainId: "0x" + CHAIN_ID.toString(16) }]);
+          provider = new ethers.BrowserProvider(window.ethereum);
+        } catch {
+          setStatus("Bitte in der Wallet auf das richtige Netzwerk wechseln.", "err");
+          return;
+        }
+      }
+
+      signer = await provider.getSigner();
+      contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+      $("account").textContent = short(await signer.getAddress());
+      $("connectBtn").textContent = "Verbunden";
+      $("connectBtn").disabled = true;
+      $("sendBtn").disabled = false;
+      setStatus("");
+      refreshBalance();
+    } catch (e) {
+      setStatus("Verbindung abgelehnt oder fehlgeschlagen.", "err");
+    }
+  }
+
+  function explainError(e) {
+    const data = e?.data || e?.info?.error?.data || e?.error?.data;
+    if (data) {
+      try {
+        const parsed = contract.interface.parseError(data);
+        if (parsed?.name === "CooldownActive") {
+          const t = new Date(Number(parsed.args[0]) * 1000);
+          return "Wartezeit aktiv – wieder möglich ab " + t.toLocaleString("de-DE") + ".";
+        }
+        if (parsed && ERROR_TEXT[parsed.name]) return ERROR_TEXT[parsed.name];
+      } catch {}
+    }
+    if (e?.code === "ACTION_REJECTED") return "Transaktion in der Wallet abgelehnt.";
+    if (e?.code === "INSUFFICIENT_FUNDS") return "Nicht genug ETH für die Gasgebühr in deiner Wallet.";
+    return e?.shortMessage || e?.message || "Unbekannter Fehler.";
+  }
+
+  async function send() {
+    const to = $("target").value.trim();
+    if (!ethers.isAddress(to)) {
+      setStatus("Bitte eine gültige Ethereum-Adresse eingeben.", "err");
+      return;
+    }
+    $("sendBtn").disabled = true;
+    try {
+      setStatus("Bitte Transaktion in der Wallet bestätigen …");
+      const tx = await contract.sendTo(to);
+      setStatus(`Gesendet, warte auf Bestätigung … <a href="${EXPLORER}/tx/${tx.hash}" target="_blank" rel="noopener">ansehen</a>`);
+      await tx.wait();
+      setStatus(`✓ 0,05 ETH an ${short(to)} gesendet. <a href="${EXPLORER}/tx/${tx.hash}" target="_blank" rel="noopener">Transaktion</a>`, "ok");
+      refreshBalance();
+    } catch (e) {
+      setStatus(explainError(e), "err");
+    } finally {
+      $("sendBtn").disabled = false;
+    }
+  }
+
+  $("connectBtn").addEventListener("click", connect);
+  $("sendBtn").addEventListener("click", send);
+  if (window.ethereum) {
+    window.ethereum.on?.("accountsChanged", () => location.reload());
+    window.ethereum.on?.("chainChanged", () => location.reload());
+  }
+</script>
+</body>
+</html>
